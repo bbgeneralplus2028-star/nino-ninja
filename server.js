@@ -2,19 +2,26 @@ import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
 
 const app = express();
 app.use(express.json());
 
+// 🔑 ENV
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
 
-// 📁 storage
+// 📁 STORAGE SETUP
 const DATA_DIR = "./data";
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
 const memoryFile = path.join(DATA_DIR, "memory.json");
+const USERS_FILE = path.join(DATA_DIR, "users.json");
 
-// 🧠 memory helpers
+// =====================
+// 🧠 MEMORY FUNCTIONS
+// =====================
 function loadMemory() {
   if (!fs.existsSync(memoryFile)) return {};
   return JSON.parse(fs.readFileSync(memoryFile));
@@ -24,40 +31,76 @@ function saveMemory(data) {
   fs.writeFileSync(memoryFile, JSON.stringify(data, null, 2));
 }
 
-// 📄 generate simple PDF (HTML download)
-function createPDF(content) {
+// =====================
+// 👤 USER FUNCTIONS
+// =====================
+function loadUsers() {
+  if (!fs.existsSync(USERS_FILE)) return [];
+  return JSON.parse(fs.readFileSync(USERS_FILE));
+}
+
+function saveUsers(users) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
+
+// =====================
+// 🔐 AUTH MIDDLEWARE
+// =====================
+function auth(req, res, next) {
+  const token = req.headers.authorization;
+  if (!token) return next(); // allow guests (you can lock later)
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded.email;
+  } catch {
+    req.user = "guest";
+  }
+
+  next();
+}
+
+app.use(auth);
+
+// =====================
+// 📄 FILE GENERATOR
+// =====================
+function createHTMLLetter(content) {
   const filename = `letter_${Date.now()}.html`;
   const filepath = path.join(DATA_DIR, filename);
 
   const html = `
   <html>
-  <body>
-    <h2>Credit Dispute Letter</h2>
-    <pre>${content}</pre>
-  </body>
+    <body>
+      <h2>Credit Dispute Letter</h2>
+      <pre>${content}</pre>
+    </body>
   </html>`;
 
   fs.writeFileSync(filepath, html);
   return filename;
 }
 
+// =====================
 // 🔥 MAIN ROUTER
+// =====================
 app.post("/router", async (req, res) => {
   const input = req.body.input || "";
   const location = req.body.location || "unknown";
-  const user = "default_user";
+  const user = req.user || "default_user";
 
   let memory = loadMemory();
   if (!memory[user]) memory[user] = [];
+
   memory[user].push(input);
   saveMemory(memory);
 
   try {
-    // 🧠 intent detection
+    // 🧠 INTENT DETECTION
     const intentRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -70,19 +113,25 @@ app.post("/router", async (req, res) => {
     });
 
     const intentData = await intentRes.json();
-    const intent = intentData.choices[0].message.content.toLowerCase();
 
-    // 💰 DEALS (ready for API plug-in)
+    const intent =
+      intentData?.choices?.[0]?.message?.content?.toLowerCase() || "general";
+
+    // =====================
+    // 💰 DEALS
+    // =====================
     if (intent.includes("deal")) {
       return res.json({
         message: `Deals near ${location}:
 - eBay trending deals
-- Walmart rollback
+- Walmart rollback deals
 - Facebook Marketplace`
       });
     }
 
-    // ⚖️ CREDIT → PDF DOWNLOAD
+    // =====================
+    // ⚖️ CREDIT LETTER
+    // =====================
     if (intent.includes("credit")) {
       const letter = `
 I am disputing inaccurate information on my credit report.
@@ -91,27 +140,31 @@ Please investigate and remove any unverifiable accounts.
 This request is made under the Fair Credit Reporting Act.
       `;
 
-      const file = createPDF(letter);
+      const file = createHTMLLetter(letter);
 
       return res.json({
-        message: `Your dispute letter is ready. Open dashboard to download.`,
+        message: "Your dispute letter is ready.",
         link: `/download/${file}`
       });
     }
 
+    // =====================
     // 🧠 MEMORY RECALL
+    // =====================
     if (input.toLowerCase().includes("what did i say")) {
       return res.json({
-        message: memory[user].slice(-5).join(", ")
+        message: memory[user].slice(-5).join(", ") || "No memory yet"
       });
     }
 
+    // =====================
     // ✂️ SUMMARIZE
+    // =====================
     if (intent.includes("summarize")) {
       const ai = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${OPENAI_API_KEY}`,
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
@@ -123,15 +176,17 @@ This request is made under the Fair Credit Reporting Act.
       const data = await ai.json();
 
       return res.json({
-        message: data.choices[0].message.content
+        message: data?.choices?.[0]?.message?.content || "No summary"
       });
     }
 
+    // =====================
     // 🧠 GENERAL AI
+    // =====================
     const ai = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -139,7 +194,7 @@ This request is made under the Fair Credit Reporting Act.
         messages: [
           {
             role: "system",
-            content: "You are Nino Ninja, a powerful AI assistant for money, automation, and life help."
+            content: "You are Nino Ninja, an AI assistant for money, automation, and life help."
           },
           {
             role: "user",
@@ -152,20 +207,73 @@ This request is made under the Fair Credit Reporting Act.
     const data = await ai.json();
 
     res.json({
-      message: data.choices[0].message.content
+      message: data?.choices?.[0]?.message?.content || "No response"
     });
 
   } catch (err) {
-    res.json({ message: "Server error" });
+    res.json({ message: "Server error occurred." });
   }
 });
 
+// =====================
+// 👤 REGISTER
+// =====================
+app.post("/register", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.json({ message: "Missing email or password" });
+  }
+
+  const users = loadUsers();
+
+  if (users.find(u => u.email === email)) {
+    return res.json({ message: "User already exists" });
+  }
+
+  const hash = await bcrypt.hash(password, 10);
+
+  users.push({ email, password: hash });
+  saveUsers(users);
+
+  res.json({ message: "User registered" });
+});
+
+// =====================
+// 🔐 LOGIN
+// =====================
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  const users = loadUsers();
+  const user = users.find(u => u.email === email);
+
+  if (!user) return res.json({ message: "User not found" });
+
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) return res.json({ message: "Invalid login" });
+
+  const token = jwt.sign({ email }, JWT_SECRET);
+
+  res.json({ token });
+});
+
+// =====================
+// 📥 DOWNLOAD FILES
+// =====================
+app.get("/download/:file", (req, res) => {
+  const filePath = path.join(DATA_DIR, req.params.file);
+  res.sendFile(path.resolve(filePath));
+});
+
+// =====================
 // 📊 DASHBOARD
+// =====================
 app.get("/", (req, res) => {
   res.send(`
-    <h1>Nino Ninja Dashboard</h1>
-    <p>System Active</p>
-    <a href="/memory">View Memory</a><br/>
+    <h1>Nino Ninja AI</h1>
+    <p>System Running</p>
+    <a href="/memory">View Memory</a>
   `);
 });
 
@@ -173,12 +281,7 @@ app.get("/memory", (req, res) => {
   res.json(loadMemory());
 });
 
-// 📥 DOWNLOAD FILES
-app.get("/download/:file", (req, res) => {
-  const filePath = path.join(DATA_DIR, req.params.file);
-  res.sendFile(path.resolve(filePath));
-});
-
+// =====================
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🔥 Nino Ninja SaaS running");
+  console.log("🔥 Nino Ninja FULL SYSTEM LIVE");
 });
