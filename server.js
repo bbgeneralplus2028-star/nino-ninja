@@ -12,7 +12,7 @@ app.use(express.json());
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
 
-// 📁 STORAGE SETUP
+// 📁 STORAGE
 const DATA_DIR = "./data";
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
@@ -20,7 +20,7 @@ const memoryFile = path.join(DATA_DIR, "memory.json");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 
 // =====================
-// 🧠 MEMORY FUNCTIONS
+// 🧠 MEMORY
 // =====================
 function loadMemory() {
   if (!fs.existsSync(memoryFile)) return {};
@@ -32,7 +32,7 @@ function saveMemory(data) {
 }
 
 // =====================
-// 👤 USER FUNCTIONS
+// 👤 USERS
 // =====================
 function loadUsers() {
   if (!fs.existsSync(USERS_FILE)) return [];
@@ -44,17 +44,21 @@ function saveUsers(users) {
 }
 
 // =====================
-// 🔐 AUTH MIDDLEWARE
+// 🔐 AUTH (optional for now)
 // =====================
 function auth(req, res, next) {
   const token = req.headers.authorization;
-  if (!token) return next(); // allow guests (you can lock later)
+
+  if (!token) {
+    req.user = "default_user";
+    return next();
+  }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded.email;
   } catch {
-    req.user = "guest";
+    req.user = "default_user";
   }
 
   next();
@@ -82,18 +86,27 @@ function createHTMLLetter(content) {
 }
 
 // =====================
-// 🔥 MAIN ROUTER
+// 🧪 TEST ROUTE (GET)
+// =====================
+app.get("/router", (req, res) => {
+  res.send("✅ Router is working. Use POST to interact.");
+});
+
+// =====================
+// 🔥 MAIN ROUTER (POST)
 // =====================
 app.post("/router", async (req, res) => {
   const input = req.body.input || "";
   const location = req.body.location || "unknown";
-  const user = req.user || "default_user";
+  const user = req.user;
 
   let memory = loadMemory();
   if (!memory[user]) memory[user] = [];
 
-  memory[user].push(input);
-  saveMemory(memory);
+  if (input.trim()) {
+    memory[user].push(input);
+    saveMemory(memory);
+  }
 
   try {
     // 🧠 INTENT DETECTION
@@ -117,9 +130,7 @@ app.post("/router", async (req, res) => {
     const intent =
       intentData?.choices?.[0]?.message?.content?.toLowerCase() || "general";
 
-    // =====================
     // 💰 DEALS
-    // =====================
     if (intent.includes("deal")) {
       return res.json({
         message: `Deals near ${location}:
@@ -129,9 +140,7 @@ app.post("/router", async (req, res) => {
       });
     }
 
-    // =====================
     // ⚖️ CREDIT LETTER
-    // =====================
     if (intent.includes("credit")) {
       const letter = `
 I am disputing inaccurate information on my credit report.
@@ -148,18 +157,14 @@ This request is made under the Fair Credit Reporting Act.
       });
     }
 
-    // =====================
     // 🧠 MEMORY RECALL
-    // =====================
     if (input.toLowerCase().includes("what did i say")) {
       return res.json({
         message: memory[user].slice(-5).join(", ") || "No memory yet"
       });
     }
 
-    // =====================
     // ✂️ SUMMARIZE
-    // =====================
     if (intent.includes("summarize")) {
       const ai = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -180,9 +185,7 @@ This request is made under the Fair Credit Reporting Act.
       });
     }
 
-    // =====================
     // 🧠 GENERAL AI
-    // =====================
     const ai = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -259,7 +262,7 @@ app.post("/login", async (req, res) => {
 });
 
 // =====================
-// 📥 DOWNLOAD FILES
+// 📥 DOWNLOAD
 // =====================
 app.get("/download/:file", (req, res) => {
   const filePath = path.join(DATA_DIR, req.params.file);
