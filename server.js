@@ -1,15 +1,20 @@
 import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
+import path from "path";
 
 const app = express();
 app.use(express.json());
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// 🧠 SIMPLE FILE MEMORY
-const memoryFile = "memory.json";
+// 📁 storage
+const DATA_DIR = "./data";
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
+const memoryFile = path.join(DATA_DIR, "memory.json");
+
+// 🧠 memory helpers
 function loadMemory() {
   if (!fs.existsSync(memoryFile)) return {};
   return JSON.parse(fs.readFileSync(memoryFile));
@@ -17,6 +22,23 @@ function loadMemory() {
 
 function saveMemory(data) {
   fs.writeFileSync(memoryFile, JSON.stringify(data, null, 2));
+}
+
+// 📄 generate simple PDF (HTML download)
+function createPDF(content) {
+  const filename = `letter_${Date.now()}.html`;
+  const filepath = path.join(DATA_DIR, filename);
+
+  const html = `
+  <html>
+  <body>
+    <h2>Credit Dispute Letter</h2>
+    <pre>${content}</pre>
+  </body>
+  </html>`;
+
+  fs.writeFileSync(filepath, html);
+  return filename;
 }
 
 // 🔥 MAIN ROUTER
@@ -31,7 +53,7 @@ app.post("/router", async (req, res) => {
   saveMemory(memory);
 
   try {
-    // 🧠 INTENT DETECTION
+    // 🧠 intent detection
     const intentRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -41,7 +63,7 @@ app.post("/router", async (req, res) => {
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: "Classify intent: deal, credit, pdf, summarize, general" },
+          { role: "system", content: "Classify intent: deal, credit, summarize, memory, general" },
           { role: "user", content: input }
         ]
       })
@@ -50,31 +72,37 @@ app.post("/router", async (req, res) => {
     const intentData = await intentRes.json();
     const intent = intentData.choices[0].message.content.toLowerCase();
 
-    // 💰 REAL DEAL API (EBAY example)
+    // 💰 DEALS (ready for API plug-in)
     if (intent.includes("deal")) {
       return res.json({
-        message: `Live deals near ${location}:
-- Check eBay trending deals
-- Walmart rollback items
-- Local Facebook Marketplace`
+        message: `Deals near ${location}:
+- eBay trending deals
+- Walmart rollback
+- Facebook Marketplace`
       });
     }
 
-    // ⚖️ CREDIT LETTER → PDF
-    if (intent.includes("credit") || intent.includes("pdf")) {
+    // ⚖️ CREDIT → PDF DOWNLOAD
+    if (intent.includes("credit")) {
       const letter = `
-CREDIT DISPUTE LETTER
-
 I am disputing inaccurate information on my credit report.
-Please investigate and remove any unverifiable accounts immediately.
+Please investigate and remove any unverifiable accounts.
 
 This request is made under the Fair Credit Reporting Act.
       `;
 
-      fs.writeFileSync("letter.txt", letter);
+      const file = createPDF(letter);
 
       return res.json({
-        message: "Your dispute letter is ready. (PDF export enabled on dashboard)"
+        message: `Your dispute letter is ready. Open dashboard to download.`,
+        link: `/download/${file}`
+      });
+    }
+
+    // 🧠 MEMORY RECALL
+    if (input.toLowerCase().includes("what did i say")) {
+      return res.json({
+        message: memory[user].slice(-5).join(", ")
       });
     }
 
@@ -99,7 +127,7 @@ This request is made under the Fair Credit Reporting Act.
       });
     }
 
-    // 🧠 GENERAL AI + MEMORY
+    // 🧠 GENERAL AI
     const ai = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -111,11 +139,11 @@ This request is made under the Fair Credit Reporting Act.
         messages: [
           {
             role: "system",
-            content: "You are Nino Ninja, a powerful assistant for money, deals, and automation."
+            content: "You are Nino Ninja, a powerful AI assistant for money, automation, and life help."
           },
           {
             role: "user",
-            content: `User said: ${input}. Memory: ${memory[user].slice(-5).join(", ")}`
+            content: input
           }
         ]
       })
@@ -128,16 +156,16 @@ This request is made under the Fair Credit Reporting Act.
     });
 
   } catch (err) {
-    res.json({ message: "Server error occurred." });
+    res.json({ message: "Server error" });
   }
 });
 
-// 📊 SIMPLE DASHBOARD
+// 📊 DASHBOARD
 app.get("/", (req, res) => {
   res.send(`
     <h1>Nino Ninja Dashboard</h1>
-    <p>Server is running</p>
-    <a href="/memory">View Memory</a>
+    <p>System Active</p>
+    <a href="/memory">View Memory</a><br/>
   `);
 });
 
@@ -145,6 +173,12 @@ app.get("/memory", (req, res) => {
   res.json(loadMemory());
 });
 
+// 📥 DOWNLOAD FILES
+app.get("/download/:file", (req, res) => {
+  const filePath = path.join(DATA_DIR, req.params.file);
+  res.sendFile(path.resolve(filePath));
+});
+
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🔥 Nino Ninja PRO running");
+  console.log("🔥 Nino Ninja SaaS running");
 });
